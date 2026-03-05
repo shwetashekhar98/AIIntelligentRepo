@@ -35,7 +35,7 @@ export interface AnthropicTool {
 
 type AnthropicMessageParam = Anthropic.MessageParam;
 
-const MODEL = "claude-sonnet-4-20250514";
+const MODEL = "claude-sonnet-4-5";
 const MAX_TOKENS = 4096;
 const MAX_TOOL_ROUNDS = 8;
 

@@ -16,7 +16,7 @@ const MonitorSchema = z.object({
   lastKnownSha: z.string().optional(),
 });
 
-const MODEL = "claude-sonnet-4-20250514";
+const MODEL = "claude-sonnet-4-5";
 
 async function summarizeNewCommits(
   anthropicApiKey: string,
