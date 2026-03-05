@@ -1,36 +1,133 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# RepoMind — Repository Intelligence
 
-## Getting Started
+RepoMind is a full-stack web app that gives you instant deep intelligence about any GitHub repository. Paste a repo URL, and Claude AI uses live MCP (Model Context Protocol) tools to analyze commits, file structure, pull requests, and code in real time — returning actionable insights in seconds.
 
-First, run the development server:
+## What is MCP?
+
+Model Context Protocol (MCP) is an open standard that lets AI models call external tools during inference. RepoMind uses the official GitHub MCP server: when you ask Claude a question, it actively calls `get_file_contents`, `list_commits`, `search_code`, and `list_pull_requests` tools in real time — reading actual code, not just summaries — before generating its answer. If MCP isn't available (e.g. no GitHub token), the app transparently falls back to the GitHub REST API.
+
+## Features
+
+- **4 preset questions**: What does this repo do? / Why recent commits? / What could break? / Onboard me
+- **Custom questions**: Ask anything about the codebase
+- **Live MCP tools**: Claude calls GitHub tools in real time during analysis
+- **Tool call log**: See exactly which GitHub tools Claude used to answer
+- **Live Repo Monitor**: Poll for new commits every 15 min, auto-summarize changes, send Slack/Telegram alerts
+- **Zero storage**: API keys stored only in browser sessionStorage
+
+## Screenshot
+
+![RepoMind UI](screenshot.png)
+
+## Local Setup
+
+### 1. Clone and install
+
+```bash
+git clone <your-repo-url>
+cd repomind
+npm install
+```
+
+### 2. Configure environment
+
+```bash
+cp .env.example .env.local
+```
+
+Edit `.env.local`:
+
+```bash
+ANTHROPIC_API_KEY=sk-ant-...   # Required: get at console.anthropic.com
+GITHUB_TOKEN=ghp_...           # Optional but recommended for MCP + private repos
+NEXT_PUBLIC_APP_URL=http://localhost:3000
+```
+
+### 3. Run development server
 
 ```bash
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open [http://localhost:3000](http://localhost:3000).
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+### 4. Use the app
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+1. Enter a GitHub repo URL (e.g. `https://github.com/vercel/next.js`)
+2. Click "API Keys" to add your Anthropic key (and optionally a GitHub token)
+3. Select a question or write your own
+4. Click "Analyze Repository"
 
-## Learn More
+> **Note**: API keys can also be entered directly in the UI. They're stored in `sessionStorage` only — never sent to a database or logged server-side.
 
-To learn more about Next.js, take a look at the following resources:
+## Tech Stack
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+| Layer | Technology |
+|-------|-----------|
+| Frontend | Next.js 14, Tailwind CSS, TypeScript |
+| AI | Anthropic Claude (`claude-sonnet-4-20250514`) with tool use |
+| MCP | `@modelcontextprotocol/sdk` — stdio transport (local), REST fallback (Vercel) |
+| GitHub | `@octokit/rest` + official GitHub MCP server |
+| Validation | Zod |
+| Fonts | Syne (headings), JetBrains Mono (code/body) |
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+## Vercel Deployment
 
-## Deploy on Vercel
+[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https://github.com/your-username/repomind)
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+After deploying, add these environment variables in Vercel project settings:
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+- `ANTHROPIC_API_KEY` — your Anthropic API key
+- `GITHUB_TOKEN` — GitHub token (optional, enables MCP for all users)
+- `NEXT_PUBLIC_APP_URL` — your Vercel deployment URL
+
+> **Vercel note**: The MCP stdio transport (child process) is not available in Vercel serverless functions. The app automatically falls back to the GitHub REST API, which provides the same analysis quality. For full MCP support, deploy to a platform that supports long-running Node.js processes.
+
+## API Reference
+
+### `POST /api/analyze`
+
+Analyze a repository with Claude.
+
+**Headers:**
+- `x-anthropic-key`: Anthropic API key
+- `x-github-token`: GitHub token (optional)
+
+**Body:**
+```json
+{
+  "repoUrl": "https://github.com/owner/repo",
+  "questionType": "purpose | commits | risks | onboarding | custom",
+  "customQuestion": "optional custom question string"
+}
+```
+
+**Response:**
+```json
+{
+  "answer": "...",
+  "toolCallLog": [...],
+  "tokensUsed": 1234,
+  "usingMCP": true,
+  "repoInfo": { ... },
+  "mcpFallback": false
+}
+```
+
+### `POST /api/monitor`
+
+Check or summarize new commits for repo monitoring.
+
+**Body:**
+```json
+{
+  "action": "check | summarize",
+  "repoUrl": "https://github.com/owner/repo",
+  "webhookUrl": "https://hooks.slack.com/...",
+  "lastKnownSha": "abc1234"
+}
+```
+
+## License
+
+MIT

@@ -1,65 +1,432 @@
-import Image from "next/image";
+"use client";
+
+import { useState } from "react";
+import RepoInput from "./components/RepoInput";
+import RepoHeader from "./components/RepoHeader";
+import AnswerCard from "./components/AnswerCard";
+
+interface ToolCallLog {
+  toolName: string;
+  input: Record<string, unknown>;
+  outputSummary: string;
+  timestamp: number;
+}
+
+interface RepoInfo {
+  fullName: string;
+  description: string | null;
+  stars: number;
+  forks: number;
+  language: string | null;
+  defaultBranch: string;
+  isPrivate: boolean;
+  topics: string[];
+  openIssues: number;
+  updatedAt: string;
+}
+
+interface AnalysisResult {
+  answer: string;
+  toolCallLog: ToolCallLog[];
+  tokensUsed: number;
+  usingMCP: boolean;
+  repoInfo: RepoInfo;
+  mcpFallback: boolean;
+}
+
+interface MonitorState {
+  active: boolean;
+  repoUrl: string;
+  webhookUrl: string;
+  lastSha: string | null;
+  lastChecked: string | null;
+  summary: string | null;
+  status: "idle" | "checking" | "error";
+}
+
+const LOADING_STEPS = [
+  "Connecting to GitHub...",
+  "Fetching repository metadata...",
+  "Reading commits & file tree...",
+  "Connecting MCP tools...",
+  "Claude is analyzing the codebase...",
+  "Generating insights...",
+];
+
+const QUESTION_LABELS: Record<string, string> = {
+  purpose: "What does this repo do?",
+  commits: "Why were recent commits made?",
+  risks: "What could break if I make changes?",
+  onboarding: "Onboard me as a new developer",
+  custom: "Custom question",
+};
 
 export default function Home() {
+  const [isLoading, setIsLoading] = useState(false);
+  const [loadingStep, setLoadingStep] = useState(0);
+  const [error, setError] = useState<string | null>(null);
+  const [result, setResult] = useState<AnalysisResult | null>(null);
+  const [currentQuestion, setCurrentQuestion] = useState<string>("purpose");
+  const [customQuestionText, setCustomQuestionText] = useState("");
+  const [isResultVisible, setIsResultVisible] = useState(false);
+
+  // Monitor state
+  const [monitor, setMonitor] = useState<MonitorState>({
+    active: false,
+    repoUrl: "",
+    webhookUrl: "",
+    lastSha: null,
+    lastChecked: null,
+    summary: null,
+    status: "idle",
+  });
+  const [monitorInput, setMonitorInput] = useState({ repoUrl: "", webhookUrl: "" });
+  const [monitorError, setMonitorError] = useState<string | null>(null);
+
+  const handleAnalyze = async (formData: {
+    repoUrl: string;
+    anthropicKey: string;
+    githubToken: string;
+    questionType: string;
+    customQuestion: string;
+  }) => {
+    setIsLoading(true);
+    setError(null);
+    setResult(null);
+    setIsResultVisible(false);
+    setCurrentQuestion(formData.questionType);
+    setCustomQuestionText(formData.customQuestion);
+
+    // Animate loading steps
+    const stepInterval = setInterval(() => {
+      setLoadingStep((prev) => Math.min(prev + 1, LOADING_STEPS.length - 1));
+    }, 1800);
+
+    try {
+      const response = await fetch("/api/analyze", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-anthropic-key": formData.anthropicKey,
+          ...(formData.githubToken ? { "x-github-token": formData.githubToken } : {}),
+        },
+        body: JSON.stringify({
+          repoUrl: formData.repoUrl,
+          questionType: formData.questionType,
+          customQuestion: formData.customQuestion || undefined,
+        }),
+      });
+
+      const data = await response.json() as AnalysisResult & { error?: string };
+
+      if (!response.ok) {
+        setError(data.error ?? "An unexpected error occurred");
+        return;
+      }
+
+      setResult(data);
+      setTimeout(() => setIsResultVisible(true), 100);
+    } catch {
+      setError("Network error. Please check your connection and try again.");
+    } finally {
+      clearInterval(stepInterval);
+      setLoadingStep(0);
+      setIsLoading(false);
+    }
+  };
+
+  const startMonitor = async () => {
+    if (!monitorInput.repoUrl) return;
+    setMonitorError(null);
+
+    const anthropicKey =
+      typeof window !== "undefined" ? (sessionStorage.getItem("anthropic_key") ?? "") : "";
+    const githubToken =
+      typeof window !== "undefined" ? (sessionStorage.getItem("github_token") ?? "") : "";
+
+    setMonitor((prev) => ({ ...prev, status: "checking" }));
+
+    try {
+      const response = await fetch("/api/monitor", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-anthropic-key": anthropicKey,
+          ...(githubToken ? { "x-github-token": githubToken } : {}),
+        },
+        body: JSON.stringify({
+          action: "check",
+          repoUrl: monitorInput.repoUrl,
+        }),
+      });
+
+      const data = await response.json() as { latestSha?: string; checkedAt?: string; error?: string };
+      if (!response.ok) {
+        setMonitorError(data.error ?? "Failed to start monitor");
+        setMonitor((prev) => ({ ...prev, status: "error" }));
+        return;
+      }
+
+      setMonitor({
+        active: true,
+        repoUrl: monitorInput.repoUrl,
+        webhookUrl: monitorInput.webhookUrl,
+        lastSha: data.latestSha ?? null,
+        lastChecked: data.checkedAt ?? null,
+        summary: null,
+        status: "idle",
+      });
+    } catch {
+      setMonitorError("Failed to connect. Check your API keys.");
+      setMonitor((prev) => ({ ...prev, status: "error" }));
+    }
+  };
+
+  const stopMonitor = () => {
+    setMonitor({
+      active: false,
+      repoUrl: "",
+      webhookUrl: "",
+      lastSha: null,
+      lastChecked: null,
+      summary: null,
+      status: "idle",
+    });
+  };
+
+  const questionLabel =
+    currentQuestion === "custom"
+      ? customQuestionText || "Custom question"
+      : (QUESTION_LABELS[currentQuestion] ?? "Analysis");
+
   return (
-    <div className="flex min-h-screen items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex min-h-screen w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the page.tsx file.
+    <main className="min-h-screen bg-[#0a0d14] text-white">
+      {/* Ambient background glow */}
+      <div className="fixed inset-0 pointer-events-none overflow-hidden">
+        <div className="absolute top-0 left-1/2 -translate-x-1/2 w-[800px] h-[400px] bg-amber-500/5 rounded-full blur-3xl" />
+        <div className="absolute bottom-0 right-0 w-[400px] h-[400px] bg-blue-500/5 rounded-full blur-3xl" />
+      </div>
+
+      <div className="relative z-10 max-w-3xl mx-auto px-4 py-12 sm:py-20">
+        {/* Hero */}
+        <div className="text-center mb-12">
+          <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-amber-500/10 border border-amber-500/20 text-amber-400 text-xs font-mono mb-6">
+            <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse" />
+            Powered by Claude AI + MCP
+          </div>
+
+          <h1 className="text-4xl sm:text-5xl font-bold text-white mb-4 tracking-tight leading-tight">
+            Understand any{" "}
+            <span className="text-amber-400">codebase</span>
+            <br />
+            instantly
           </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
+
+          <p className="text-zinc-400 text-base sm:text-lg max-w-xl mx-auto leading-relaxed">
+            Paste a GitHub repository URL. Claude uses live MCP tools to analyze commits,
+            code, and PRs in real time — giving you deep intelligence about any codebase.
           </p>
         </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={16}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
+
+        {/* Input card */}
+        <div className="bg-[#111620] border border-zinc-800 rounded-2xl p-6 shadow-2xl mb-8">
+          <RepoInput onSubmit={handleAnalyze} isLoading={isLoading} />
         </div>
-      </main>
-    </div>
+
+        {/* Loading state */}
+        {isLoading && (
+          <div className="bg-[#111620] border border-zinc-800 rounded-2xl p-8 mb-8">
+            <div className="flex flex-col items-center gap-6">
+              {/* Animated orb */}
+              <div className="relative w-16 h-16">
+                <div className="absolute inset-0 w-16 h-16 rounded-full bg-amber-500/20 animate-ping" />
+                <div className="relative w-16 h-16 rounded-full bg-amber-500/10 flex items-center justify-center">
+                  <div className="w-8 h-8 border-2 border-amber-500/30 border-t-amber-500 rounded-full animate-spin" />
+                </div>
+              </div>
+
+              {/* Step indicator */}
+              <div className="text-center space-y-2">
+                <p className="text-zinc-300 text-sm font-medium">
+                  {LOADING_STEPS[loadingStep]}
+                </p>
+                <div className="flex gap-1 justify-center">
+                  {LOADING_STEPS.map((_, i) => (
+                    <div
+                      key={i}
+                      className={`h-1 rounded-full transition-all duration-500 ${
+                        i <= loadingStep ? "w-6 bg-amber-500" : "w-2 bg-zinc-700"
+                      }`}
+                    />
+                  ))}
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Error state */}
+        {error && !isLoading && (
+          <div className="bg-red-900/20 border border-red-500/30 rounded-xl p-4 mb-8 flex items-start gap-3">
+            <span className="text-red-400 text-lg flex-shrink-0 mt-0.5">⚠</span>
+            <div>
+              <p className="text-red-300 text-sm font-medium">Analysis failed</p>
+              <p className="text-red-400/80 text-sm mt-0.5">{error}</p>
+            </div>
+          </div>
+        )}
+
+        {/* Results */}
+        {result && !isLoading && (
+          <div>
+            <RepoHeader
+              repoInfo={result.repoInfo}
+              usingMCP={result.usingMCP}
+              mcpFallback={result.mcpFallback}
+              toolCount={result.toolCallLog.length}
+            />
+
+            {result.mcpFallback && (
+              <div className="bg-zinc-800/50 border border-zinc-700/50 rounded-lg px-4 py-2.5 mb-4 flex items-center gap-2 text-xs text-zinc-400">
+                <span className="text-zinc-500">ℹ</span>
+                Using REST API fallback — add a GitHub token to enable live MCP tools
+              </div>
+            )}
+
+            <AnswerCard
+              questionLabel={questionLabel}
+              questionType={currentQuestion}
+              answer={result.answer}
+              toolCallLog={result.toolCallLog}
+              tokensUsed={result.tokensUsed}
+              isVisible={isResultVisible}
+            />
+          </div>
+        )}
+
+        {/* Monitor section */}
+        <div className="mt-16 pt-12 border-t border-zinc-800/50">
+          <div className="flex items-center gap-3 mb-3">
+            <div className="flex items-center gap-2">
+              <span
+                className={`w-2 h-2 rounded-full ${
+                  monitor.active ? "bg-emerald-500 animate-pulse" : "bg-zinc-600"
+                }`}
+              />
+              <h2 className="text-white font-semibold">Live Repo Monitor</h2>
+            </div>
+            <span className="text-xs px-2 py-0.5 rounded-full bg-zinc-800 text-zinc-500 border border-zinc-700">
+              beta
+            </span>
+          </div>
+
+          <p className="text-zinc-500 text-sm mb-6 leading-relaxed">
+            Watch a repository for new commits. Claude auto-summarizes changes every 15 minutes
+            and sends alerts to your Slack or Telegram webhook.
+          </p>
+
+          {!monitor.active ? (
+            <div className="bg-[#111620] border border-zinc-800 rounded-xl p-5 space-y-4">
+              <div>
+                <label className="block text-xs font-medium text-zinc-400 mb-1.5 font-mono">
+                  Repository URL
+                </label>
+                <input
+                  type="text"
+                  value={monitorInput.repoUrl}
+                  onChange={(e) =>
+                    setMonitorInput((prev) => ({ ...prev, repoUrl: e.target.value }))
+                  }
+                  placeholder="https://github.com/username/repo"
+                  className="w-full bg-[#0a0d14] border border-zinc-700 rounded-lg px-4 py-2.5 text-white placeholder-zinc-600 font-mono text-sm focus:outline-none focus:border-amber-500 transition-colors"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-medium text-zinc-400 mb-1.5 font-mono">
+                  Webhook URL{" "}
+                  <span className="text-zinc-600">(Slack / Telegram — optional)</span>
+                </label>
+                <input
+                  type="url"
+                  value={monitorInput.webhookUrl}
+                  onChange={(e) =>
+                    setMonitorInput((prev) => ({ ...prev, webhookUrl: e.target.value }))
+                  }
+                  placeholder="https://hooks.slack.com/..."
+                  className="w-full bg-[#0a0d14] border border-zinc-700 rounded-lg px-4 py-2.5 text-white placeholder-zinc-600 font-mono text-sm focus:outline-none focus:border-amber-500 transition-colors"
+                />
+              </div>
+
+              {monitorError && (
+                <p className="text-red-400 text-sm">{monitorError}</p>
+              )}
+
+              <button
+                onClick={startMonitor}
+                disabled={!monitorInput.repoUrl}
+                className="w-full py-2.5 rounded-lg border border-zinc-700 text-zinc-300 text-sm hover:border-zinc-500 hover:text-white disabled:opacity-40 disabled:cursor-not-allowed transition-all"
+              >
+                Start Monitoring
+              </button>
+            </div>
+          ) : (
+            <div className="bg-[#111620] border border-zinc-800 rounded-xl p-5">
+              <div className="flex items-start justify-between mb-4">
+                <div>
+                  <div className="flex items-center gap-2 mb-1">
+                    <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+                    <span className="text-emerald-400 text-sm font-medium">Active</span>
+                  </div>
+                  <p className="text-zinc-400 text-xs font-mono">{monitor.repoUrl}</p>
+                  {monitor.lastChecked && (
+                    <p className="text-zinc-600 text-xs mt-1">
+                      Last checked: {new Date(monitor.lastChecked).toLocaleTimeString()}
+                    </p>
+                  )}
+                  {monitor.status === "checking" && (
+                    <p className="text-amber-400 text-xs mt-1 flex items-center gap-1.5">
+                      <span className="inline-block w-3 h-3 border border-amber-400/30 border-t-amber-400 rounded-full animate-spin" />
+                      Checking for new commits...
+                    </p>
+                  )}
+                </div>
+                <button
+                  onClick={stopMonitor}
+                  className="text-xs text-zinc-500 hover:text-red-400 transition-colors px-2 py-1 rounded border border-zinc-700 hover:border-red-500/30"
+                >
+                  Stop
+                </button>
+              </div>
+
+              {monitor.summary && (
+                <div className="bg-zinc-900/50 rounded-lg p-3 border border-zinc-700/50">
+                  <p className="text-xs text-amber-400 font-mono mb-1.5">Latest changes</p>
+                  <p className="text-zinc-300 text-sm leading-relaxed">{monitor.summary}</p>
+                </div>
+              )}
+
+              {monitor.webhookUrl && (
+                <p className="text-zinc-600 text-xs mt-3">
+                  Alerts: <span className="font-mono">{monitor.webhookUrl.slice(0, 40)}...</span>
+                </p>
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* Footer */}
+        <footer className="mt-16 pt-8 border-t border-zinc-800/50 text-center">
+          <p className="text-zinc-600 text-xs">
+            RepoMind — Repository Intelligence powered by{" "}
+            <span className="text-amber-500/60">Claude AI</span> and{" "}
+            <span className="text-blue-500/60">MCP</span>
+          </p>
+          <p className="text-zinc-700 text-xs mt-1">
+            API keys are stored only in your browser session and never sent to a database.
+          </p>
+        </footer>
+      </div>
+    </main>
   );
 }
